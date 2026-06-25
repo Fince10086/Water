@@ -521,7 +521,6 @@ select {
   padding: 20px 20px 25px 20px;
 }
 
-/* 所有控制都采用“标签 + 读数 + 控件本体”的一致结构。 */
 .control {
   display: flex;
   flex-direction: column;
