@@ -113,8 +113,6 @@ async function initialize(payload: Record<string, unknown>): Promise<void> {
 
   const wasmPath = (payload.wasmPath as string) || "/mediapipe/wasm";
   const modelAssetPath = (payload.modelAssetPath as string) || "/mediapipe/hand_landmarker.task";
-  const libraryText = payload.libraryText as string | undefined;
-  const libraryBlobUrl = payload.libraryBlobUrl as string | undefined;
 
   const preferred = (payload.preferredDelegate as string) || "GPU";
   const delegatesToTry = preferred === "GPU" ? ["GPU", "CPU"] : [preferred];
@@ -122,7 +120,7 @@ async function initialize(payload: Record<string, unknown>): Promise<void> {
   try {
     installFetchInterceptor();
 
-    await ensureVisionLoaded({ ...payload, libraryText, libraryBlobUrl });
+    await ensureVisionLoaded(payload);
 
     self.postMessage({
       type: "progress",
@@ -195,40 +193,22 @@ async function ensureVisionLoaded(payload: Record<string, unknown>): Promise<voi
     return;
   }
 
-  const libraryText = payload.libraryText as string | undefined;
-  const libraryBlobUrl = payload.libraryBlobUrl as string | undefined;
   const libraryUrl = (payload.libraryUrl as string) || VISION_LIBRARY_URL;
 
-  if (libraryText) {
-    const blob = new Blob([libraryText], { type: "text/javascript" });
-    const blobUrl = URL.createObjectURL(blob);
-    try {
-      const visionApi = await import(/* @vite-ignore */ blobUrl);
-      FilesetResolverRef = visionApi.FilesetResolver;
-      HandLandmarkerRef = visionApi.HandLandmarker;
-    } finally {
-      URL.revokeObjectURL(blobUrl);
-    }
-  } else if (libraryBlobUrl) {
-    const visionApi = await import(/* @vite-ignore */ libraryBlobUrl);
+  const looksLikeModuleBundle = typeof libraryUrl === "string" && /\.mjs(?:$|\?)/.test(libraryUrl);
+
+  try {
+    const visionApi = await import(/* @vite-ignore */ libraryUrl);
     FilesetResolverRef = visionApi.FilesetResolver;
     HandLandmarkerRef = visionApi.HandLandmarker;
-  } else {
-    const looksLikeModuleBundle = typeof libraryUrl === "string" && /\.mjs(?:$|\?)/.test(libraryUrl);
-
-    try {
-      const visionApi = await import(/* @vite-ignore */ libraryUrl);
-      FilesetResolverRef = visionApi.FilesetResolver;
-      HandLandmarkerRef = visionApi.HandLandmarker;
-    } catch (importError) {
-      if (!looksLikeModuleBundle && typeof importScripts === "function") {
-        importScripts(libraryUrl);
-        const visionApi = (self as unknown as unknown as Record<string, unknown>).vision || self;
-        FilesetResolverRef = (visionApi as unknown as Record<string, unknown>).FilesetResolver;
-        HandLandmarkerRef = (visionApi as unknown as Record<string, unknown>).HandLandmarker;
-      } else {
-        throw importError;
-      }
+  } catch (importError) {
+    if (!looksLikeModuleBundle && typeof importScripts === "function") {
+      importScripts(libraryUrl);
+      const visionApi = (self as unknown as unknown as Record<string, unknown>).vision || self;
+      FilesetResolverRef = (visionApi as unknown as Record<string, unknown>).FilesetResolver;
+      HandLandmarkerRef = (visionApi as unknown as Record<string, unknown>).HandLandmarker;
+    } else {
+      throw importError;
     }
   }
 

@@ -77,7 +77,7 @@ export class HandGestureRecognizer {
       if (message.type === "progress") {
         const payload = message.payload || {};
         if (payload.percent !== undefined) {
-          const pct = 50 + Math.round((payload.percent / 100) * 45);
+          const pct = 40 + Math.round((payload.percent / 100) * 55);
           this.onProgress?.(pct, `Loading ${payload.fileName || "model"}...`);
         }
         return;
@@ -149,7 +149,8 @@ export class HandGestureRecognizer {
 
     this.initializingPromise = (async () => {
       try {
-        const mjsText = await this._prefetchMjs();
+        this.onProgress?.(0, "Loading vision library...");
+
         const taskBlobUrl = await this._prefetchTask();
         this._preloadedTaskBlobUrl = taskBlobUrl;
 
@@ -161,7 +162,7 @@ export class HandGestureRecognizer {
           this.worker!.postMessage({
             type: "init",
             payload: {
-              libraryText: mjsText,
+              libraryUrl: VISION_LIBRARY_URL,
               wasmPath: WASM_PATH,
               modelAssetPath: taskBlobUrl,
               preferredDelegate: "GPU",
@@ -178,31 +179,20 @@ export class HandGestureRecognizer {
     return this.initializingPromise;
   }
 
-  private async _prefetchMjs(): Promise<string> {
-    this.onProgress?.(0, "Loading vision library...");
-    const response = await fetch(VISION_LIBRARY_URL);
-    if (!response.ok) {
-      throw new Error(`Failed to load vision library: ${response.status}`);
-    }
-    const text = await response.text();
-    this.onProgress?.(20, "Vision library loaded");
-    return text;
-  }
-
   private async _prefetchTask(): Promise<string> {
-    this.onProgress?.(20, "Loading hand detection model...");
+    this.onProgress?.(0, "Loading hand detection model...");
     const blob = await fetchWithProgress(MODEL_ASSET_PATH, (progress) => {
-      const overall = 20 + Math.round((progress.percent / 100) * 30);
+      const overall = Math.round((progress.percent / 100) * 40);
       this.onProgress?.(overall, `Loading hand model... ${progress.percent}%`);
     });
     const blobUrl = URL.createObjectURL(blob);
-    this.onProgress?.(50, "Initializing MediaPipe...");
+    this.onProgress?.(40, "Model loaded");
     return blobUrl;
   }
 
   private _startAutoAdvance(): void {
     this._stopAutoAdvance();
-    let current = 50;
+    let current = 40;
     this._autoAdvanceTimer = setInterval(() => {
       if (current < 95) {
         current += Math.random() * 3 + 1;

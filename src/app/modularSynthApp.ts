@@ -771,7 +771,7 @@ export class ModularSynthApp {
           this.downloadOverlay.update(percent, label);
         };
         this.gestureManager.activate(
-          this.engine.getSpectrumAnalyser() as unknown as { getValue(): Float32Array },
+          () => this.engine.getSpectrumAnalyser() as unknown as { getValue(): Float32Array },
           () => this.engine.getDuration(),
           () => this.engine.getChainSourceLevel(3)
         ).catch(() => {

@@ -109,6 +109,8 @@ export class GestureManager {
   playBtn: HTMLButtonElement | null;
   getDuration: (() => number) | null;
   getChain3Level: (() => number) | null;
+  analyserGetter: (() => { getValue(): Float32Array }) | null;
+  private _analyserResolved: boolean = false;
   private _rippleFrameCounter: number = 0;
 
   pointerDrag: { active: boolean; pointIndex: number; pointerId: number } | null;
@@ -156,6 +158,8 @@ export class GestureManager {
     this.playBtn = null;
     this.getDuration = null;
     this.getChain3Level = null;
+    this.analyserGetter = null;
+    this._analyserResolved = false;
     this.pointerDrag = null;
 
     this.smoothedLandmarks = [];
@@ -212,11 +216,13 @@ export class GestureManager {
     this.onResize = null;
   }
 
-  async activate(analyser?: { getValue(): Float32Array }, getDuration?: () => number, getChain3Level?: () => number): Promise<void> {
+  async activate(analyserGetter?: () => { getValue(): Float32Array }, getDuration?: () => number, getChain3Level?: () => number): Promise<void> {
     if (this.active || this.activating) return;
     this.activating = true;
     this.getDuration = getDuration ?? null;
     this.getChain3Level = getChain3Level ?? null;
+    this.analyserGetter = analyserGetter ?? null;
+    this._analyserResolved = false;
     try {
       this.recognizer.onProgress = (percent, label) => {
         this.onDownloadProgress?.(percent, label);
@@ -226,7 +232,7 @@ export class GestureManager {
       await this.recognizer.startCamera();
       this.active = true;
 
-      this.createOverlay(analyser ?? null);
+      this.createOverlay();
       this.recognizer.onResults = (results) => this.handleResults(results);
       this.recognizer.startDetection();
       document.addEventListener("keydown", this.onEsc);
@@ -267,7 +273,7 @@ export class GestureManager {
     this.app.renderAll();
   }
 
-  createOverlay(analyser: { getValue(): Float32Array } | null): void {
+  createOverlay(): void {
     this.overlay = document.createElement("div");
     this.overlay.className = "gesture-overlay";
 
@@ -276,9 +282,7 @@ export class GestureManager {
     this.spectrogramCanvas.className = "gesture-canvas gesture-canvas-spectrogram";
     this.overlay.appendChild(this.spectrogramCanvas);
     this.spectrogramRenderer = new SpectrogramRenderer(this.spectrogramCanvas);
-    if (analyser) {
-      this.spectrogramRenderer.setAnalyser(analyser);
-    }
+    this._tryResolveAnalyser();
 
     // Water ripple layer (middle)
     this.waterCanvas = document.createElement("canvas");
@@ -327,6 +331,7 @@ export class GestureManager {
       if (Tone.Transport.state === "started") {
         Tone.Transport.pause();
       } else {
+        this._tryResolveAnalyser();
         Tone.Transport.start();
       }
     });
@@ -380,6 +385,15 @@ export class GestureManager {
       this.transportBar = null;
       this.transportBarFill = null;
       this.playBtn = null;
+    }
+  }
+
+  private _tryResolveAnalyser(): void {
+    if (this._analyserResolved || !this.spectrogramRenderer || !this.analyserGetter) return;
+    const analyser = this.analyserGetter();
+    if (analyser) {
+      this.spectrogramRenderer.setAnalyser(analyser);
+      this._analyserResolved = true;
     }
   }
 
@@ -538,6 +552,7 @@ export class GestureManager {
       this.tickFps("render");
 
       // Render spectrogram and use it as water background
+      this._tryResolveAnalyser();
       this.spectrogramRenderer?.render();
       if (this.spectrogramCanvas && this.waterRenderer) {
         this.waterRenderer.setBackground(this.spectrogramCanvas);
