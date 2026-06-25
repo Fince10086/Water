@@ -1565,3 +1565,70 @@ select {
   white-space: nowrap;
 }
 
+/* ==================== 下载进度提示 ==================== */
+.download-overlay {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(12px);
+  z-index: var(--z-overlay);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease;
+}
+
+.download-overlay--visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.download-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 260px;
+  max-width: 380px;
+  padding: 12px 18px 10px;
+  background: var(--ink);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.download-overlay-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink-tint-13);
+  white-space: nowrap;
+}
+
+.download-overlay-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--ink-tint-78);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.download-overlay-bar-inner {
+  height: 100%;
+  width: 0%;
+  border-radius: 0;
+  background: var(--source-tint-78);
+  transition: width 180ms ease;
+}
+
+.download-overlay-bar-inner--done {
+  background: var(--success);
+}
+
+.download-overlay-detail {
+  font-size: 0.65rem;
+  color: var(--ink-tint-25);
+  white-space: nowrap;
+  min-height: 1em;
+}
+

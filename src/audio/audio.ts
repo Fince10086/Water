@@ -13,6 +13,7 @@ import {
 import { createTrackPlayerRuntime, type TrackPlayerRuntime } from "./runtimes/trackPlayerRuntime";
 import { createEffectRuntime } from "./runtimes/effectRuntime";
 import { connectSignalChain } from "./chain/signalChain";
+import { fetchWithProgress, type DownloadProgress } from "../utils/downloadProgress";
 import type { ModuleConfig, Preset, GlobalState } from "../types";
 
 export class AudioEngine {
@@ -28,6 +29,8 @@ export class AudioEngine {
   scopeMonoMix!: Tone.Gain;
   isPlaying: boolean;
   _progressCallback: (() => void) | null;
+  _onDownloadProgress: ((progress: DownloadProgress) => void) | null;
+  private _blobUrls: string[];
 
   constructor(app: Record<string, unknown>) {
     this.app = app;
@@ -37,6 +40,8 @@ export class AudioEngine {
     this.moduleRuntimes = new Map();
     this.isPlaying = false;
     this._progressCallback = null;
+    this._onDownloadProgress = null;
+    this._blobUrls = [];
   }
 
   async start(state: Preset): Promise<void> {
@@ -73,6 +78,63 @@ export class AudioEngine {
         mm.connectAllModulations();
       }
     }
+  }
+
+  onDownloadProgress(callback: (progress: DownloadProgress) => void): void {
+    this._onDownloadProgress = callback;
+  }
+
+  async preloadAudio(): Promise<void> {
+    this._cleanupBlobUrls();
+
+    const chainCount = 4;
+    let completedBytes = 0;
+    let totalBytes = 0;
+    const fileSizes: number[] = [];
+
+    const urls = Array.from({ length: chainCount }, (_, i) => getTrackAudioUrl(i));
+
+    const headResponses = await Promise.all(
+      urls.map(async (url) => {
+        try {
+          const resp = await fetch(url, { method: "HEAD" });
+          if (resp.ok) {
+            const len = parseInt(resp.headers.get("content-length") || "0", 10);
+            totalBytes += len;
+            return len;
+          }
+        } catch {
+          // ignore
+        }
+        return 0;
+      })
+    );
+    fileSizes.push(...headResponses);
+
+    for (let i = 0; i < urls.length; i++) {
+      const blob = await fetchWithProgress(urls[i], (progress) => {
+        const fileStart = fileSizes.slice(0, i).reduce((a, b) => a + b, 0);
+        const currentLoaded = fileStart + progress.loaded;
+        const pct = totalBytes > 0 ? Math.round((currentLoaded / totalBytes) * 100) : 0;
+        if (this._onDownloadProgress) {
+          this._onDownloadProgress({ loaded: currentLoaded, total: totalBytes, percent: pct });
+        }
+      });
+
+      const blobUrl = URL.createObjectURL(blob);
+      this._blobUrls.push(blobUrl);
+    }
+  }
+
+  private _cleanupBlobUrls(): void {
+    this._blobUrls.forEach((url) => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // ignore
+      }
+    });
+    this._blobUrls = [];
   }
 
   getAnalyser(): Tone.Analyser {
@@ -197,7 +259,8 @@ export class AudioEngine {
 
   createModuleRuntime(module: ModuleConfig, chainIndex: number): Record<string, unknown> {
     if (this.isSourceModule(module)) {
-      const url = getTrackAudioUrl(chainIndex);
+      const blobUrl = this._blobUrls[chainIndex];
+      const url = blobUrl || getTrackAudioUrl(chainIndex);
       return createTrackPlayerRuntime(module, url) as unknown as Record<string, unknown>;
     }
     return createEffectRuntime(module) as unknown as Record<string, unknown>;

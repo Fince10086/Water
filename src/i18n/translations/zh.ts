@@ -205,4 +205,16 @@ export const zhTranslations: Record<string, string> = {
   "AI Timbre": "AI 音色",
   "Saved new preset: {{name}}": "已保存新预设：{{name}}",
   "Reset to original state": "已重置为原始状态",
+
+  // Download progress
+  "Loading audio...": "正在加载音频...",
+  "Loading gesture model...": "正在加载手势模型...",
+  "Loading vision library...": "正在加载视觉库...",
+  "Loading hand detection model...": "正在加载手部检测模型...",
+  "Loading hand model... {{percent}}%": "正在加载手部模型... {{percent}}%",
+  "Loading processing engine...": "正在加载处理引擎...",
+  "Loading model...": "正在加载模型...",
+  "Initializing MediaPipe...": "正在初始化 MediaPipe...",
+  "Vision library loaded": "视觉库加载完成",
+  "Ready": "就绪",
 };

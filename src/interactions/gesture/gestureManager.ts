@@ -94,6 +94,7 @@ export class GestureManager {
   recognizer: HandGestureRecognizer;
   active: boolean;
   activating: boolean;
+  onDownloadProgress: ((percent: number, label: string) => void) | null;
 
   overlay: HTMLDivElement | null;
   waterCanvas: HTMLCanvasElement | null;
@@ -141,6 +142,7 @@ export class GestureManager {
     this.recognizer = new HandGestureRecognizer();
     this.active = false;
     this.activating = false;
+    this.onDownloadProgress = null;
 
     this.overlay = null;
     this.waterCanvas = null;
@@ -216,7 +218,11 @@ export class GestureManager {
     this.getDuration = getDuration ?? null;
     this.getChain3Level = getChain3Level ?? null;
     try {
+      this.recognizer.onProgress = (percent, label) => {
+        this.onDownloadProgress?.(percent, label);
+      };
       await this.recognizer.initialize();
+      this.recognizer.onProgress = null;
       await this.recognizer.startCamera();
       this.active = true;
 

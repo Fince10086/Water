@@ -56,6 +56,9 @@ export function createTrackPlayerRuntime(
         player?.sync().start(0);
         resolveLoaded();
       },
+      onerror: () => {
+        resolveLoaded();
+      },
     });
 
     player.connect(gainNode);

@@ -16,6 +16,9 @@ let initialized = false;
 let FilesetResolverRef: unknown = null;
 let HandLandmarkerRef: unknown = null;
 
+let _originalFetch: typeof fetch | null = null;
+let _fetchPatched = false;
+
 interface PinchState {
   pinching: boolean;
   x: number;
@@ -43,6 +46,65 @@ self.onmessage = async (event: MessageEvent) => {
   }
 };
 
+function installFetchInterceptor(): void {
+  if (_fetchPatched) return;
+  _originalFetch = self.fetch.bind(self);
+  _fetchPatched = true;
+
+  self.fetch = async function (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const url = typeof input === "string" ? input
+      : input instanceof URL ? input.href
+      : (input as Request).url;
+
+    const response = await _originalFetch!(input, init);
+
+    const contentLength = response.headers.get("content-length");
+    const total = contentLength ? parseInt(contentLength, 10) : 0;
+
+    if (total > 0 && response.body) {
+      const reader = response.body.getReader();
+      let loaded = 0;
+      const chunks: Uint8Array<ArrayBuffer>[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value as Uint8Array<ArrayBuffer>);
+        loaded += value.length;
+
+        const fileName = url.split("/").pop() || url;
+        self.postMessage({
+          type: "progress",
+          payload: {
+            fileName,
+            loaded,
+            total,
+            percent: Math.round((loaded / total) * 100),
+          },
+        });
+      }
+
+      const blob = new Blob(chunks);
+      return new Response(blob, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }
+
+    return response;
+  };
+}
+
+function restoreFetch(): void {
+  if (!_fetchPatched || !_originalFetch) return;
+  self.fetch = _originalFetch;
+  _fetchPatched = false;
+}
+
 async function initialize(payload: Record<string, unknown>): Promise<void> {
   if (initialized && handLandmarker) {
     self.postMessage({ type: "ready", payload: { delegate: (payload.activeDelegate as string) || "CPU" } });
@@ -51,13 +113,40 @@ async function initialize(payload: Record<string, unknown>): Promise<void> {
 
   const wasmPath = (payload.wasmPath as string) || "/mediapipe/wasm";
   const modelAssetPath = (payload.modelAssetPath as string) || "/mediapipe/hand_landmarker.task";
+  const libraryText = payload.libraryText as string | undefined;
+  const libraryBlobUrl = payload.libraryBlobUrl as string | undefined;
 
   const preferred = (payload.preferredDelegate as string) || "GPU";
   const delegatesToTry = preferred === "GPU" ? ["GPU", "CPU"] : [preferred];
 
   try {
-    await ensureVisionLoaded(payload);
+    installFetchInterceptor();
+
+    await ensureVisionLoaded({ ...payload, libraryText, libraryBlobUrl });
+
+    self.postMessage({
+      type: "progress",
+      payload: {
+        fileName: "model",
+        loaded: 0,
+        total: 0,
+        percent: 0,
+        label: "loading_wasm",
+      },
+    });
+
     const vision = await (FilesetResolverRef as { forVisionTasks(path: string): Promise<unknown> }).forVisionTasks(wasmPath);
+
+    self.postMessage({
+      type: "progress",
+      payload: {
+        fileName: "model",
+        loaded: 0,
+        total: 0,
+        percent: 0,
+        label: "loading_model",
+      },
+    });
 
     let lastError: Error | null = null;
     for (const delegate of delegatesToTry) {
@@ -81,6 +170,7 @@ async function initialize(payload: Record<string, unknown>): Promise<void> {
           minTrackingConfidence: 0.5,
         });
 
+        restoreFetch();
         initialized = true;
         self.postMessage({ type: "ready", payload: { delegate } });
         return;
@@ -91,8 +181,10 @@ async function initialize(payload: Record<string, unknown>): Promise<void> {
       }
     }
 
+    restoreFetch();
     throw lastError || new Error("All delegates failed.");
   } catch (error) {
+    restoreFetch();
     const message = error instanceof Error ? error.message : String(error);
     self.postMessage({ type: "error", payload: { message } });
   }
@@ -103,21 +195,40 @@ async function ensureVisionLoaded(payload: Record<string, unknown>): Promise<voi
     return;
   }
 
+  const libraryText = payload.libraryText as string | undefined;
+  const libraryBlobUrl = payload.libraryBlobUrl as string | undefined;
   const libraryUrl = (payload.libraryUrl as string) || VISION_LIBRARY_URL;
-  const looksLikeModuleBundle = typeof libraryUrl === "string" && /\.mjs(?:$|\?)/.test(libraryUrl);
 
-  try {
-    const visionApi = await import(/* @vite-ignore */ libraryUrl);
+  if (libraryText) {
+    const blob = new Blob([libraryText], { type: "text/javascript" });
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+      const visionApi = await import(/* @vite-ignore */ blobUrl);
+      FilesetResolverRef = visionApi.FilesetResolver;
+      HandLandmarkerRef = visionApi.HandLandmarker;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  } else if (libraryBlobUrl) {
+    const visionApi = await import(/* @vite-ignore */ libraryBlobUrl);
     FilesetResolverRef = visionApi.FilesetResolver;
     HandLandmarkerRef = visionApi.HandLandmarker;
-  } catch (importError) {
-    if (!looksLikeModuleBundle && typeof importScripts === "function") {
-      importScripts(libraryUrl);
-      const visionApi = (self as unknown as unknown as Record<string, unknown>).vision || self;
-      FilesetResolverRef = (visionApi as unknown as Record<string, unknown>).FilesetResolver;
-      HandLandmarkerRef = (visionApi as unknown as Record<string, unknown>).HandLandmarker;
-    } else {
-      throw importError;
+  } else {
+    const looksLikeModuleBundle = typeof libraryUrl === "string" && /\.mjs(?:$|\?)/.test(libraryUrl);
+
+    try {
+      const visionApi = await import(/* @vite-ignore */ libraryUrl);
+      FilesetResolverRef = visionApi.FilesetResolver;
+      HandLandmarkerRef = visionApi.HandLandmarker;
+    } catch (importError) {
+      if (!looksLikeModuleBundle && typeof importScripts === "function") {
+        importScripts(libraryUrl);
+        const visionApi = (self as unknown as unknown as Record<string, unknown>).vision || self;
+        FilesetResolverRef = (visionApi as unknown as Record<string, unknown>).FilesetResolver;
+        HandLandmarkerRef = (visionApi as unknown as Record<string, unknown>).HandLandmarker;
+      } else {
+        throw importError;
+      }
     }
   }
 
@@ -251,6 +362,7 @@ function resetState(): void {
 }
 
 function dispose(): void {
+  restoreFetch();
   if (handLandmarker) {
     (handLandmarker as { close(): void }).close();
     handLandmarker = null;

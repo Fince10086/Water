@@ -3,6 +3,7 @@
  */
 
 import visionBundleUrl from "@mediapipe/tasks-vision?url";
+import { fetchWithProgress } from "../../utils/downloadProgress";
 
 const WASM_PATH = "/mediapipe/wasm";
 const VISION_LIBRARY_URL = visionBundleUrl;
@@ -28,7 +29,10 @@ export class HandGestureRecognizer {
   private lastVideoTime: number;
 
   onResults: ((results: GestureResults) => void) | null;
+  onProgress: ((percent: number, label: string) => void) | null;
   private inferencePending: boolean;
+  private _autoAdvanceTimer: ReturnType<typeof setInterval> | null;
+  private _preloadedTaskBlobUrl: string | null;
 
   private handleWorkerMessage: (event: MessageEvent) => void;
   private handleWorkerError: (event: ErrorEvent) => void;
@@ -47,20 +51,34 @@ export class HandGestureRecognizer {
     this.lastVideoTime = -1;
 
     this.onResults = null;
+    this.onProgress = null;
     this.inferencePending = false;
+    this._autoAdvanceTimer = null;
+    this._preloadedTaskBlobUrl = null;
 
     this.handleWorkerMessage = (event: MessageEvent) => {
       const message = event.data || {};
 
       if (message.type === "ready") {
+        this._stopAutoAdvance();
         this.workerReady = true;
         this.initializingPromise = null;
         const usedDelegate = message.payload?.delegate || "CPU";
         console.info(`[HandGestureRecognizer] Initialized with ${usedDelegate} delegate.`);
+        this.onProgress?.(100, "Ready");
         if (this.resolveInit) {
           this.resolveInit();
           this.resolveInit = null;
           this.rejectInit = null;
+        }
+        return;
+      }
+
+      if (message.type === "progress") {
+        const payload = message.payload || {};
+        if (payload.percent !== undefined) {
+          const pct = 50 + Math.round((payload.percent / 100) * 45);
+          this.onProgress?.(pct, `Loading ${payload.fileName || "model"}...`);
         }
         return;
       }
@@ -74,6 +92,7 @@ export class HandGestureRecognizer {
       }
 
       if (message.type === "error") {
+        this._stopAutoAdvance();
         this.inferencePending = false;
         const workerError = new Error(message.payload?.message || "Worker inference failed.");
         if (this.rejectInit) {
@@ -88,6 +107,7 @@ export class HandGestureRecognizer {
     };
 
     this.handleWorkerError = (event: ErrorEvent) => {
+      this._stopAutoAdvance();
       this.inferencePending = false;
       this.workerReady = false;
       const workerError =
@@ -109,6 +129,7 @@ export class HandGestureRecognizer {
 
   async initialize(): Promise<void> {
     if (this.workerReady && this.worker) {
+      this.onProgress?.(100, "Already initialized");
       return;
     }
 
@@ -126,21 +147,76 @@ export class HandGestureRecognizer {
       this.worker.addEventListener("error", this.handleWorkerError);
     }
 
-    this.initializingPromise = new Promise((resolve, reject) => {
-      this.resolveInit = resolve;
-      this.rejectInit = reject;
-      this.worker!.postMessage({
-        type: "init",
-        payload: {
-          libraryUrl: VISION_LIBRARY_URL,
-          wasmPath: WASM_PATH,
-          modelAssetPath: MODEL_ASSET_PATH,
-          preferredDelegate: "GPU",
-        },
-      });
-    });
+    this.initializingPromise = (async () => {
+      try {
+        const mjsText = await this._prefetchMjs();
+        const taskBlobUrl = await this._prefetchTask();
+        this._preloadedTaskBlobUrl = taskBlobUrl;
+
+        this._startAutoAdvance();
+
+        return new Promise<void>((resolve, reject) => {
+          this.resolveInit = resolve;
+          this.rejectInit = reject;
+          this.worker!.postMessage({
+            type: "init",
+            payload: {
+              libraryText: mjsText,
+              wasmPath: WASM_PATH,
+              modelAssetPath: taskBlobUrl,
+              preferredDelegate: "GPU",
+            },
+          });
+        });
+      } catch (error) {
+        this.initializingPromise = null;
+        this._stopAutoAdvance();
+        throw error;
+      }
+    })();
 
     return this.initializingPromise;
+  }
+
+  private async _prefetchMjs(): Promise<string> {
+    this.onProgress?.(0, "Loading vision library...");
+    const response = await fetch(VISION_LIBRARY_URL);
+    if (!response.ok) {
+      throw new Error(`Failed to load vision library: ${response.status}`);
+    }
+    const text = await response.text();
+    this.onProgress?.(20, "Vision library loaded");
+    return text;
+  }
+
+  private async _prefetchTask(): Promise<string> {
+    this.onProgress?.(20, "Loading hand detection model...");
+    const blob = await fetchWithProgress(MODEL_ASSET_PATH, (progress) => {
+      const overall = 20 + Math.round((progress.percent / 100) * 30);
+      this.onProgress?.(overall, `Loading hand model... ${progress.percent}%`);
+    });
+    const blobUrl = URL.createObjectURL(blob);
+    this.onProgress?.(50, "Initializing MediaPipe...");
+    return blobUrl;
+  }
+
+  private _startAutoAdvance(): void {
+    this._stopAutoAdvance();
+    let current = 50;
+    this._autoAdvanceTimer = setInterval(() => {
+      if (current < 95) {
+        current += Math.random() * 3 + 1;
+        if (current > 95) current = 95;
+        this.onProgress?.(Math.round(current), "Loading processing engine...");
+      }
+    }, 400);
+  }
+
+  private _stopAutoAdvance(): void {
+    if (this._autoAdvanceTimer) {
+      clearInterval(this._autoAdvanceTimer);
+      this._autoAdvanceTimer = null;
+    }
   }
 
   async startCamera(): Promise<void> {
@@ -240,7 +316,16 @@ export class HandGestureRecognizer {
   }
 
   dispose(): void {
+    this._stopAutoAdvance();
     this.stopCamera();
+    if (this._preloadedTaskBlobUrl) {
+      try {
+        URL.revokeObjectURL(this._preloadedTaskBlobUrl);
+      } catch {
+        // ignore
+      }
+      this._preloadedTaskBlobUrl = null;
+    }
     if (this.worker) {
       this.worker.removeEventListener("message", this.handleWorkerMessage);
       this.worker.removeEventListener("error", this.handleWorkerError);

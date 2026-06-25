@@ -36,6 +36,7 @@ import {
   renderMainCardContent,
   cacheDynamicElements as cacheDynamicElementsFn,
 } from "../ui/components";
+import { createDownloadOverlay, type DownloadOverlay } from "../ui/components/downloadOverlay";
 import { renderModuleCard } from "../ui/rendering/moduleRenderer";
 import { layoutModuleMasonry } from "../ui/layout/masonryLayout";
 import {
@@ -101,6 +102,7 @@ export class ModularSynthApp {
 
   elements: ModularSynthAppElements;
   scopeContext: CanvasRenderingContext2D | null;
+  downloadOverlay: DownloadOverlay;
 
   sourceMonitor: SourceOutputMonitor | undefined;
 
@@ -129,6 +131,7 @@ export class ModularSynthApp {
     this.modulationManager = new ModulationManager(this);
     this.dragManager = new ModuleDragManager(this as unknown as unknown as Record<string, unknown>);
     this.engine = new AudioEngine(this as unknown as unknown as Record<string, unknown>);
+    this.downloadOverlay = createDownloadOverlay();
 
     this.aiPhase = 'idle';
     this.aiReasoning = null;
@@ -402,6 +405,27 @@ export class ModularSynthApp {
   }
 
   handlePlay(): void {
+    if (this.isPlaying) {
+      this.engine.togglePlay().then(() => {
+        this.isPlaying = this.engine.isTransportPlaying();
+        this.transportProgress = this.engine.getProgress();
+        this.transportDuration = this.engine.getDuration();
+        this.renderAll();
+      });
+      return;
+    }
+
+    if (this.audioBooted) {
+      this.engine.togglePlay().then(() => {
+        this.isPlaying = this.engine.isTransportPlaying();
+        this.transportProgress = this.engine.getProgress();
+        this.transportDuration = this.engine.getDuration();
+        this.renderAll();
+      });
+      return;
+    }
+
+    this.downloadOverlay.show(t("Loading audio..."));
     this.ensureAudioStarted().then(() => {
       this.engine.togglePlay().then(() => {
         this.isPlaying = this.engine.isTransportPlaying();
@@ -439,11 +463,17 @@ export class ModularSynthApp {
       return;
     }
     try {
+      this.engine.onDownloadProgress((progress) => {
+        this.downloadOverlay.update(progress.percent, `${progress.loaded} / ${progress.total} bytes`);
+      });
+      await this.engine.preloadAudio();
       await this.engine.start(this.state);
+      this.downloadOverlay.update(100);
       this.audioBooted = true;
       this.transportDuration = this.engine.getDuration();
       this.setStatus(t("Audio ready."), "live");
     } catch (error: unknown) {
+      this.downloadOverlay.hide();
       this.setStatus(t("Audio failed: {{error}}", { error: error instanceof Error ? error.message : String(error) }), "error");
     }
   }
@@ -736,11 +766,17 @@ export class ModularSynthApp {
         });
       },
       onGestureClick: () => {
+        this.downloadOverlay.show(t("Loading gesture model..."));
+        this.gestureManager.onDownloadProgress = (percent, label) => {
+          this.downloadOverlay.update(percent, label);
+        };
         this.gestureManager.activate(
           this.engine.getSpectrumAnalyser() as unknown as { getValue(): Float32Array },
           () => this.engine.getDuration(),
           () => this.engine.getChainSourceLevel(3)
-        );
+        ).catch(() => {
+          this.downloadOverlay.hide();
+        });
       },
       onDeleteUserPreset: (id: string) => {
         removeUserPreset(id);
@@ -860,6 +896,8 @@ export class ModularSynthApp {
     }
 
     this.renderAll();
+
+    document.body.appendChild(this.downloadOverlay.element);
 
     const scopeEl = document.getElementById("oscilloscope");
     if (scopeEl) {
